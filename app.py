@@ -1,30 +1,18 @@
 from flask import Flask, request, jsonify, session, send_from_directory
-from sklearn.model_selection import train_test_split
-from sklearn.metrics import mean_absolute_error
 from flask_cors import CORS
-import pandas.api.types
 import os
 import shutil
 import joblib
 import warnings
 import pandas as pd
-from sklearn.metrics import r2_score
-from sklearn.tree import ExtraTreeRegressor
-from sklearn.linear_model import ElasticNetCV, ElasticNet, GammaRegressor
-from sklearn.dummy import DummyRegressor
-from sklearn.ensemble import BaggingRegressor
-from sklearn.linear_model import BayesianRidge
 import numpy as np
-from sklearn.tree import DecisionTreeRegressor
-from sklearn.ensemble import ExtraTreesRegressor, AdaBoostRegressor
 import plotly.graph_objects as go
-from sklearn import preprocessing
-from lazypredict.Supervised import LazyRegressor
 import lazypredict
 import plotly.express as px
 import datetime
 
 from forecasting import train, test
+from prediction import training, testing
 
 warnings.warn('ignore', category=FutureWarning)
 np.random.seed(1)
@@ -71,6 +59,9 @@ def create_project():
         project_name = request.form['project_name']
         session['project_name'] = project_name
         UPLOAD_FOLDER_1 = 'projects/' + project_name + '/'
+        if not os.path.isdir('projects/'):
+            os.mkdir('projects/')
+
         if os.path.isdir(UPLOAD_FOLDER_1):
             return jsonify("Project " + project_name + " already exists")
         if not os.path.isdir(UPLOAD_FOLDER_1):
@@ -82,6 +73,7 @@ def create_project():
 @app.route('/load_data', methods=["GET", "POST"])
 def data_load():
     if request.method == 'POST':
+        session['project_name'] = 'project1'
         UPLOAD_FOLDER_1 = 'projects/' + session['project_name'] + '/' + 'data/'
         UPLOAD_FOLDER_2 = 'projects/' + session['project_name'] + '/' + 'models/'
         if os.path.isdir(UPLOAD_FOLDER_1):
@@ -114,53 +106,14 @@ def data_load():
 @app.route('/train', methods=["GET", "POST"])
 def model_training():
     if request.method == 'POST':
+        session['project_name'] = 'project1'
         file = os.listdir('projects/' + session['project_name'] + '/' + 'data/')
         dataset = pd.read_csv('projects/' + session['project_name'] + '/' + 'data/' + file[0])
         target = request.form['target']
 
-        if pandas.api.types.is_numeric_dtype(dataset[target]):
-            dataset['date'] = pd.to_datetime(dataset['date'])
-            dataset['month'] = [i.month for i in dataset['date']]
-            dataset['year'] = [i.year for i in dataset['date']]
-            dataset['day_of_week'] = [i.dayofweek for i in dataset['date']]
-            dataset['day_of_year'] = [i.dayofyear for i in dataset['date']]
-            dataset['day'] = [i.day for i in dataset['date']]
-            le = preprocessing.LabelEncoder()
-            dataset['category'] = le.fit_transform(dataset['category'])
-            joblib.dump(le, 'projects/' + session['project_name'] + '/' + 'product_encoder.joblib', compress=9)
-            # load it when test
-            X = dataset.drop([target, 'date'], axis=1)
-            y = dataset[target]
-            train_x, test_x, train_y, test_y = train_test_split(X, y, test_size=0.2, random_state=42)
-            reg = LazyRegressor(verbose=0, ignore_warnings=False, custom_metric=None)
-            d = {'BaggingRegressor': BaggingRegressor(), 'ElasticNetCV': ElasticNetCV(), 'ElasticNet': ElasticNet(),
-                 'ExtraTreeRegressor': ExtraTreeRegressor(), 'GammaRegressor': GammaRegressor(),
-                 'ExtraTreesRegressor': ExtraTreesRegressor(), 'DecisionTreeRegressor': DecisionTreeRegressor(),
-                 'DummyRegressor': DummyRegressor(), 'AdaBoostRegressor': AdaBoostRegressor(),
-                 'BayesianRidge': BayesianRidge()}
-            models, _ = reg.fit(train_x, test_x, train_y, test_y)
-            model_names = []
-            mae_list = []
-            r2_list = []
-            adj_r2_list = []
-            n = len(test_x)
-            p = len(test_x.columns)
-            for i in range(0, 3):
-                model = d[models.index[i]]
-                model.fit(train_x, train_y)
-                predictions = model.predict(test_x)
-                r2_value = r2_score(test_y, predictions)
-                mae_value = mean_absolute_error(test_y, predictions)
-                adj_r2 = 1 - (1 - r2_value) * (n - 1) / (n - p - 1)
-                model_names.append(models.index[i])
-                mae_list.append(mae_value)
-                r2_list.append(r2_value)
-                adj_r2_list.append(adj_r2)
-                joblib.dump(model, 'projects/' + session['project_name'] + '/' + 'models/' + models.index[i] + ".pkl")
-            modelDetails = {'Models': model_names, 'MAE': mae_list,
-                            'r2 score': r2_list, 'Adjusted r2 score': adj_r2_list}
-        else:
-            return jsonify('Target Feature name should be Numeric')
+        model_path = 'projects/' + session['project_name'] + '/'
+        modelDetails = training(model_path, dataset, target)
+
         return modelDetails
 
 
@@ -177,6 +130,7 @@ def model_list():
 @app.route('/test', methods=['GET', 'POST'])
 def model_test():
     if request.method == 'POST':
+        session['project_name'] = 'project1'
         UPLOAD_FOLDER = 'projects/' + session['project_name'] + '/' + 'test_data/'
         file = request.files['test_file']
         if os.path.isdir(UPLOAD_FOLDER):
@@ -195,31 +149,10 @@ def model_test():
         model_name = request.form['model_name']
         data_test = pd.read_csv(filepath)
         data = data_test.copy()
-        data['date'] = pd.to_datetime(data['date'])
-        data['month'] = [i.month for i in data['date']]
-        data['year'] = [i.year for i in data['date']]
-        data['day_of_week'] = [i.dayofweek for i in data['date']]
-        data['day_of_year'] = [i.dayofyear for i in data['date']]
-        data['day'] = [i.day for i in data['date']]
-        le = joblib.load('projects/' + session['project_name'] + '/' + 'product_encoder.joblib')
-        data['category'] = le.transform(data['category'])
-        X = data.drop(["date"], axis=1)
-        path = os.listdir('projects/' + session['project_name'] + '/' + 'models/')
-        lis = []
-        for i in range(len(path)):
-            lis.append(path[i][:-4])
-        available_models = {"Models": lis}
-        if model_name in available_models['Models']:
-            model = joblib.load('projects/' + session['project_name'] + '/' + 'models/' + model_name + '.pkl')
-        else:
-            return jsonify("Model not found!")
-        data_test['sales'] = model.predict(X)
-        data_test['sales'] = data_test['sales'].apply(np.ceil)
-        data_test['sales'] = data_test['sales'].astype(int)
-        if os.path.isfile('projects/' + session['project_name'] + '/' + "Output.csv"):
-            os.remove('projects/' + session['project_name'] + '/' + "Output.csv")
-        data_test.to_csv('projects/' + session['project_name'] + '/' + "Output.csv", index=False)
-        return data_test.to_dict()
+        model_path = 'projects/' + session['project_name'] + '/'
+
+        data_out = testing(model_path, data, data_test, model_name)
+        return data_out
     else:
         return jsonify('GET method is not supported')
 
